@@ -1,118 +1,84 @@
 #include <LGFOpenBC.H>
 
-#include <AMReX_ParmParse.H>
-
-using namespace amrex;
-
-LGFOpenBC::LGFOpenBC (const Geometry& geom_in, int n_look_in, int box_quantum_in)
-    : geom(geom_in), n_lookup(n_look_in), box_quantum(std::max(1, box_quantum_in)),
-      m_cached_domain(IntVect(AMREX_D_DECL(0,0,0)), IntVect(AMREX_D_DECL(-1,-1,-1)))
+LGFOpenBC::LGFOpenBC(const amrex::Geometry& geom_in, int n_look_in)
+    : geom(geom_in), n_lookup(n_look_in),
+      cached_cc_domain(amrex::IntVect(AMREX_D_DECL(0,0,0)), amrex::IntVect(AMREX_D_DECL(-1,-1,-1))),
+      cached_nd_domain(amrex::IntVect(AMREX_D_DECL(0,0,0)), amrex::IntVect(AMREX_D_DECL(-1,-1,-1)), amrex::IndexType::TheNodeType())
 {
-    // m_cached_domain starts empty (hi < lo) so the first solve always builds.
+    // cached_domains are set to be empty (high < low);
+    // first solve always builds and stores
 }
 
 
-amrex::IntVect LGFOpenBC::paddedLength () const
+amrex::Box LGFOpenBC::makeDomain(const amrex::MultiFab& target, const amrex::BoxArray& tag_ba) const
 {
-    return m_solver ? m_solver->PaddedLength() : IntVect(AMREX_D_DECL(0,0,0));
-}
+    // the domain fed to the FFT machinery must include the tagged source boxes
+    // as well as all target boxes
+    amrex::Box bx = amrex::grow(target.boxArray().minimalBox(), target.nGrowVect());
+    bx.minBox(tag_ba.minimalBox());
 
-
-Box LGFOpenBC::makeDomain (const MultiFab& target, const BoxArray& tag_ba) const
-{
-    // The transform domain must cover BOTH:
-    //   (a) the tagged sources -- otherwise ParallelCopy silently drops them
-    //   (b) the region where u is wanted, including ghosts if backward_doit is
-    //       to fill them -- otherwise the solution is silently truncated
-    //
-    // In the testbench (a) and (b) coincide, so getting this wrong would not
-    // show up here. In NSE_GPU the evaluation region is generally larger than
-    // the tagged support, and the failure mode is a solution that looks right
-    // in the interior and is zero near the edges.
-    Box bx = amrex::grow(target.boxArray().minimalBox(), target.nGrowVect());
-    if (!tag_ba.empty()) {
-        bx.minBox(tag_ba.minimalBox());
-    }
-
-    // Quantise so that a snug domain jittering by a few cells between regrids
-    // keeps hitting the same cached solver. Growing only on the high side
-    // keeps the lo corner fixed, which matters because the Green's function
-    // functor is written relative to domain.smallEnd().
-    if (box_quantum > 1) {
-        IntVect len = bx.length();
-        for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-            int q = ((len[idim] + box_quantum - 1) / box_quantum) * box_quantum;
-            bx.growHi(idim, q - len[idim]);
-        }
-    }
     return bx;
 }
 
 
-void LGFOpenBC::ensureSolver (const Box& domain)
+amrex::FFT::OpenBCSolver<amrex::Real>& LGFOpenBC::buildSolver(const amrex::Box& domain)
 {
-    // BoxArray/Box comparison here is a plain value compare, not the
-    // permutation-sensitive BoxArray::operator== that caused the latching
-    // regrid bug -- Box has no distribution to disagree about.
-    if (m_solver && domain == m_cached_domain) { return; }
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(domain.ixType() == amrex::IndexType::TheCellType() ||
+                                        domain.ixType() == amrex::IndexType::TheNodeType(),
+                                        "LGFOpenBC: cache has slots for cell-centered and fully-nodal only");
 
-    BL_PROFILE("<Setup> LGFOpenBC::ensureSolver");
+    // check which solver to update
+    const bool is_nodal = domain.ixType().nodeCentered();
+    auto& solver_ptr = is_nodal ? nd_solver : cc_solver;
+    auto& cached_domain_ptr = is_nodal ? cached_nd_domain : cached_cc_domain;
 
-    FFT::Info info;
-    info.setOpenBCPadding(true);   // default, but be explicit: rounds the
-                                   // one-sided length via FFT::nextFastLen
-                                   // before doubling, which is what keeps a
-                                   // prime-sized snug domain from falling into
-                                   // a cuFFT Bluestein path.
+    // If the solver object already has a pointer and the cached domain is the
+    // same as present, don't build. Note that box comparison does not require
+    // two-way .contains(), simple == suffices.
+    if (solver_ptr && domain == cached_domain_ptr) { return *solver_ptr; }
 
-    m_solver = std::make_unique<FFT::OpenBCSolver<Real>>(domain, info);
-    m_cached_domain = domain;
+    BL_PROFILE("<Setup> LGFOpenBC::buildSolver");
 
-    // ---- the Green's function functor -------------------------------------
-    //
+    amrex::FFT::Info info;
+    // default padding; rounding to nextFastLen()
+    info.setOpenBCPadding(true);
+    solver_ptr.reset();
+    solver_ptr = std::make_unique<amrex::FFT::OpenBCSolver<amrex::Real>>(domain, info);
+    cached_domain_ptr = domain;
+
+    // AI COMMENT <yet to be fully interpreted>:
     // setGreensFunction calls f(ii+lo.x, jj+lo.y, kk+lo.z) where ii,jj,kk are
     // ZERO-BASED offsets into the (padded, doubled) domain. So the lattice
     // offset is (arg - domain.smallEnd()). AMReX handles the mirroring and the
     // zeroed middle planes internally -- we never touch the wrap-around layout.
-    //
-    // Scaling: with L_h = h^-2 L,  u = h^2 * sum_m G(n-m) f(m). The prefactor
-    // is h^2 in EVERY dimension, NOT the cell volume. (In 2D h^2 == dvol, which
-    // is why directSumLGF's dvol works there by coincidence and not in 3D.)
-    // solve()'s internal scaling_factor is only the 1/N FFT normalisation, so
-    // h^2 has to ride along here.
-    //
-    // Everything captured is POD; the functor is copied into a device lambda.
+    
+    // plain data for passing into GPU lambda
     const auto  glo = domain.smallEnd().dim3();
     const auto  dx  = geom.CellSizeArray();
-    const Real  h2  = dx[0] * dx[1];
+    const amrex::Real  h2  = dx[0] * dx[1];
     const int   nlk = n_lookup;
 
-    m_solver->setGreensFunction(
-        [=] AMREX_GPU_DEVICE (int i, int j, int k) -> Real
+    solver_ptr->setGreensFunction(
+        [=] AMREX_GPU_DEVICE (int i, int j, int k) -> amrex::Real
         {
-            // Reuse computeLGF() unchanged rather than adding an offset-based
-            // entry point. It takes physical coordinates and rounds internally,
-            // so feeding it (offset*dx, 0) reproduces the integer offset
-            // exactly. The point is that DirectSumLGF and LGFOpenBC then call
-            // bit-identical kernel code -- any discrepancy between the two
-            // backends is in the plumbing, not the kernel.
-            AMREX_D_TERM(const Real xt = Real(i - glo.x) * dx[0];,
-                         const Real yt = Real(j - glo.y) * dx[1];,
-                         const Real zt = Real(k - glo.z) * dx[2];)
+            AMREX_D_TERM(const amrex::Real xt = amrex::Real(i - glo.x) * dx[0];,
+                         const amrex::Real yt = amrex::Real(j - glo.y) * dx[1];,
+                         const amrex::Real zt = amrex::Real(k - glo.z) * dx[2];)
 
-            return h2 * computeLGF(nlk,
-                                   AMREX_D_DECL(xt, yt, zt),
-                                   AMREX_D_DECL(Real(0.0), Real(0.0), Real(0.0)),
-                                   AMREX_D_DECL(dx[0], dx[1], dx[2]));
+            return h2 * computeLGF(nlk, AMREX_D_DECL(xt, yt, zt),
+                                        AMREX_D_DECL(amrex::Real(0.0), amrex::Real(0.0), amrex::Real(0.0)),
+                                        AMREX_D_DECL(dx[0], dx[1], dx[2]));
         });
 
     amrex::Print() << "LGFOpenBC: built solver on " << domain
-                   << ", padded one-sided length " << m_solver->PaddedLength() << "\n";
+                   << ", padded one-sided length " << solver_ptr->PaddedLength() << "\n";
+    
+    return *solver_ptr;
 }
 
 
-void LGFOpenBC::doSolve (const MultiFab& source, MultiFab& target,
-                         const BoxArray& tag_ba)
+void LGFOpenBC::doSolve(const amrex::MultiFab& source, amrex::MultiFab& target,
+                        const amrex::BoxArray& tag_ba)
 {
     BL_PROFILE("<Compute> LGFOpenBC::solve()");
 
@@ -125,36 +91,34 @@ void LGFOpenBC::doSolve (const MultiFab& source, MultiFab& target,
 
     if (tag_ba.empty()) { return; }   // no sources => u == 0 everywhere
 
-    // Restrict the RHS to the tagged support. OpenBCSolver has no notion of
-    // tagging, so the truncation has to happen before it sees the data.
-    // Cheap: one masked copy on the existing layout.
-    MultiFab rhs(source.boxArray(), source.DistributionMap(), 1, 0);
-    rhs.setVal(0.0);
-    for (MFIter mfi(rhs, TilingIfNotGPU()); mfi.isValid(); ++mfi) {
-        const Box& bx = mfi.tilebox();
-        if (!tag_ba.intersects(amrex::enclosedCells(mfi.validbox()))) { continue; }
-        auto const& src = source.const_array(mfi);
-        auto const& dst = rhs.array(mfi);
-        ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k)
-        {
-            dst(i,j,k) = src(i,j,k);
-        });
-    }
+    // check if solve is nodal or cell-centered and assign correct buffer
+    const bool is_nodal = source.ixType().nodeCentered();
+    auto& rhs = is_nodal ? nd_rhs : cc_rhs;
 
-    ensureSolver(makeDomain(target, tag_ba));
-    m_solver->solve(target, rhs);
+    // restrict the source field to the support, specified by tag_ba
+    amrex::BoxArray rhs_ba = amrex::convert(tag_ba, source.ixType());
+    if (!rhs.ok() || rhs.boxArray() != rhs_ba) {
+        rhs.clear();
+        rhs.define(rhs_ba, amrex::DistributionMapping(rhs_ba), 1, 0);
+    }
+    rhs.setVal(0.0);
+
+    // assert before copying
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(rhs.ixType() == source.ixType(), "LGFOpenBC: rhs buffer index type does not match source");
+    rhs.ParallelCopy(source, 0, 0, 1);
+
+    buildSolver(makeDomain(target, tag_ba)).solve(target, rhs);
 }
 
-
-void LGFOpenBC::solvePoisson (const MultiFab& source, MultiFab& target,
-                              const BoxArray& tag_ba)
+void LGFOpenBC::solvePoisson(const amrex::MultiFab& source, amrex::MultiFab& target,
+                              const amrex::BoxArray& tag_ba)
 {
     doSolve(source, target, tag_ba);
 }
 
 
-void LGFOpenBC::solveNodalPoisson (const MultiFab& source, MultiFab& target,
-                                   const BoxArray& tag_ba)
+void LGFOpenBC::solveNodalPoisson(const amrex::MultiFab& source, amrex::MultiFab& target,
+                                   const amrex::BoxArray& tag_ba)
 {
     // OpenBCSolver preserves domain.ixType() through make_grown_domain, and the
     // lattice offsets are node-to-node exactly as they are cell-to-cell, so the
@@ -164,15 +128,16 @@ void LGFOpenBC::solveNodalPoisson (const MultiFab& source, MultiFab& target,
 }
 
 
-void LGFOpenBC::regridOnto (const Geometry& new_geom, const BoxArray& new_ba,
-                            const DistributionMapping& new_dm)
+void LGFOpenBC::regridOnto(const amrex::Geometry& new_geom, const amrex::BoxArray& new_ba, const amrex::DistributionMapping& new_dm)
 {
     amrex::ignore_unused(new_ba, new_dm);
     geom = new_geom;
 
-    // Drop the cache. ensureSolver() rebuilds lazily on the next solve, and
-    // only if the quantised domain actually changed -- so a regrid that keeps
-    // the same bounding-box dimensions costs nothing.
-    m_cached_domain = Box(IntVect(AMREX_D_DECL(0,0,0)),
-                          IntVect(AMREX_D_DECL(-1,-1,-1)));
+    // clear cache
+    cc_rhs.clear();
+    nd_rhs.clear();
+    cc_solver.reset();
+    nd_solver.reset();
+    cached_cc_domain = amrex::Box(amrex::IntVect(AMREX_D_DECL(0,0,0)), amrex::IntVect(AMREX_D_DECL(-1,-1,-1)));
+    cached_nd_domain = amrex::Box(amrex::IntVect(AMREX_D_DECL(0,0,0)), amrex::IntVect(AMREX_D_DECL(-1,-1,-1)), amrex::IndexType::TheNodeType());
 }

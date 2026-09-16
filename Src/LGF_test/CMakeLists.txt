@@ -65,5 +65,5 @@ add_custom_command(TARGET lgfpoisson POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
     "${CMAKE_CURRENT_SOURCE_DIR}/Utils/description.txt"
     "${CMAKE_SOURCE_DIR}/Exec/LGF_test/Results/description.txt"
-    COMMENT "Syncing postprocessor to Exec/LGF_test..."
+    COMMENT "Syncing case description file to Exec/LGF_test..."
 )

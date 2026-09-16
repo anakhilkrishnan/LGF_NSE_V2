@@ -47,44 +47,40 @@ private:
     amrex::Geometry geom;
     int n_lookup;
 
-    //! Round each bounding-box dimension up to a multiple of this before
-    //! building a solver. Purely a cache-hit optimisation: FFT length padding
-    //! is already handled internally by Info::openbc_padding (default true),
-    //! which rounds to a fast length via FFT::nextFastLen. Set to 1 to disable.
-    int box_quantum;
+    // the domain that the spectral Green's function is built on, for
+    // cell-centered and nodal MultiFabs respectively; these are computed once,
+    // stored and recomputed only when regridOnto() is called
+    amrex::Box cached_cc_domain;
+    amrex::Box cached_nd_domain;
 
-    //! Domain the cached solver was built for. Invalid => must (re)build.
-    amrex::Box m_cached_domain;
+    // creating object for AMReX's FFT class OpenBCSolver
+    std::unique_ptr<amrex::FFT::OpenBCSolver<amrex::Real>> cc_solver;
+    std::unique_ptr<amrex::FFT::OpenBCSolver<amrex::Real>> nd_solver;
 
-    std::unique_ptr<amrex::FFT::OpenBCSolver<amrex::Real>> m_solver;
+    // scratch multifab for storing tagged source alone
+    amrex::MultiFab cc_rhs;
+    amrex::MultiFab nd_rhs;
 
-    //! Smallest domain covering both the tagged sources and the evaluation
-    //! region, quantised. See the .cpp for why both are needed.
-    amrex::Box makeDomain (const amrex::MultiFab& target,
-                           const amrex::BoxArray& tag_ba) const;
+    // function for finding bounding-box domain that fully covers all target
+    // cells and all tagged source boxes
+    amrex::Box makeDomain(const amrex::MultiFab& target, const amrex::BoxArray& tag_ba) const;
 
 
 public:
 
-    LGFOpenBC (const amrex::Geometry& geom_in, int n_look_in, int box_quantum_in = 1);
+    LGFOpenBC(const amrex::Geometry& geom_in, int n_look_in);
 
-    void solvePoisson (const amrex::MultiFab& source, amrex::MultiFab& target,
-                       const amrex::BoxArray& tag_ba) override;
+    // HELPER functions, kept public because GPU kernel needs to be launched
+    // checks if cached domain reflects current domain; rebuilds if necessary
+    amrex::FFT::OpenBCSolver<amrex::Real>& buildSolver(const amrex::Box& domain);
+    // core solve function; invokes functions from AMReX::FFT
+    void doSolve(const amrex::MultiFab& source, amrex::MultiFab& target, const amrex::BoxArray& tag_ba);
 
-    void solveNodalPoisson (const amrex::MultiFab& source, amrex::MultiFab& target,
-                            const amrex::BoxArray& tag_ba) override;
-
-    void regridOnto (const amrex::Geometry& new_geom, const amrex::BoxArray& new_ba,
-                     const amrex::DistributionMapping& new_dm) override;
-
-    //! Build the solver and its spectral Green's function if the domain changed.
-    void ensureSolver (const amrex::Box& domain);
-
-    void doSolve (const amrex::MultiFab& source, amrex::MultiFab& target,
-                  const amrex::BoxArray& tag_ba);
-
-    //! Padded one-sided length of the cached solver, for logging. Zero if none.
-    [[nodiscard]] amrex::IntVect paddedLength () const;
+    // WRAPPER functions for external calling
+    void solvePoisson(const amrex::MultiFab& source, amrex::MultiFab& target, const amrex::BoxArray& tag_ba) override;
+    void solveNodalPoisson(const amrex::MultiFab& source, amrex::MultiFab& target, const amrex::BoxArray& tag_ba) override;
+    void regridOnto(const amrex::Geometry& new_geom, const amrex::BoxArray& new_ba, const amrex::DistributionMapping& new_dm) override;
+      
 };
 
 #endif
