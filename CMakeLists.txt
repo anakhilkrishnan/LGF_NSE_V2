@@ -38,6 +38,9 @@ else()
   message(STATUS "LGF_Accelerate: Using AMReX provided by parent project.")
 endif()
 
+# setting EXEC_DIR for in-situ building
+get_filename_component(EXEC_DIR "${CMAKE_BINARY_DIR}" DIRECTORY)
+
 # building as static library
 add_subdirectory(Src/LGF_core)
 
@@ -48,9 +51,9 @@ if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)
   add_subdirectory(Src/LGF_test)
 
   # make Exec directories in case they're not present
-  file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/Exec/LGF_test/Results")
-  file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/Exec/LGF_test/Logs")
-  
+  file(MAKE_DIRECTORY "${EXEC_DIR}/LGF_test/Results")
+  file(MAKE_DIRECTORY "${EXEC_DIR}/LGF_test/Logs")
+
 else()
 
   # no additional building, only static library for use as a submodule
