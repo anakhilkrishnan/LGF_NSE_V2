@@ -6,11 +6,11 @@ max_grid_size = 16
 
 tagging_threshold = 1.0e-8
 
+index_type = 1 1 1
 domain_lo = -5.0 -5.0 -5.0
 domain_hi = 5.0 5.0 5.0
 
 solver_type = 2
-nodal_compute = false
 n_lookup = 32
 
 compare_MLMG = false

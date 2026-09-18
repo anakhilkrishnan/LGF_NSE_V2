@@ -20,6 +20,7 @@ void extendedMain()
     int n_cell, max_grid_size, n_lookup, solver_type;
     amrex::Real source_tag_thresh;
     amrex::Array<amrex::Real,AMREX_SPACEDIM> phy_dom_lo, phy_dom_hi;
+    amrex::IntVect indexing_input;
     bool nodal_compute = false;
     bool write_plot = false;
     bool compare_MLMG = false;
@@ -31,16 +32,29 @@ void extendedMain()
     amrex::ParmParse pp;
     pp.get("n_cell",n_cell);
     pp.get("max_grid_size",max_grid_size);
+    pp.get("index_type", indexing_input);
     pp.get("domain_lo", phy_dom_lo);
     pp.get("domain_hi", phy_dom_hi);
     pp.get("tagging_threshold", source_tag_thresh);
     pp.get("n_lookup", n_lookup);
+    pp.get("solver_type", solver_type);
 
-    pp.query("solver_type", solver_type);
-    pp.query("nodal_compute", nodal_compute);
     pp.query("write_plot", write_plot);
     pp.query("plot_prefix", plot_prefix);
     pp.query("compare_MLMG", compare_MLMG);
+
+    amrex::IndexType indexing(indexing_input);
+    amrex::Print() << "Our Index Type for this solve is: " << indexing << "\n";
+    
+    if (solver_type == 1 && (indexing != amrex::IndexType::TheCellType() && indexing != amrex::IndexType::TheNodeType()))
+    {
+        amrex::Abort("Can't do direct sum on edge/face-centered types");
+    }
+
+    if (solver_type != 2 && indexing == amrex::IndexType::TheNodeType())
+    {
+        nodal_compute = true;
+    }
 
     // initializing parameters for MultiFabs
     int n_ghost = 1;
@@ -52,7 +66,7 @@ void extendedMain()
     // Define the computational domain
     amrex::IntVect dom_lo(AMREX_D_DECL(       0,        0,        0));
     amrex::IntVect dom_hi(AMREX_D_DECL(n_cell-1, n_cell-1, n_cell-1));
-    amrex::Box domain(dom_lo, dom_hi);
+    amrex::Box domain(dom_lo, dom_hi, indexing);
 
     // Define the periodicity
     amrex::Vector<int> is_periodic(AMREX_SPACEDIM, 0); // 0 = not periodic
@@ -62,22 +76,19 @@ void extendedMain()
     // Break up boxarray "ba" into chunks no larger than "max_grid_size" along a direction
     ba.maxSize(max_grid_size);
 
-    // branch for nodal compute, beyond this, always use ba_in_use
-    amrex::BoxArray ba_in_use = (nodal_compute) ? amrex::convert(ba, amrex::IntVect::TheNodeVector()) : ba;
-
-    // This defines the physical box, [0,1] in each direction.
+    // This defines the physical box
     amrex::RealBox real_box(phy_dom_lo, phy_dom_hi);
 
     // This defines a Geometry object
     geom.define(domain,&real_box,amrex::CoordSys::cartesian,is_periodic.data());
 
     // How Boxes are distrubuted among MPI processes
-    amrex::DistributionMapping dm(ba_in_use);
+    amrex::DistributionMapping dm(ba);
 
     
     // creating source and target multifabs
-    amrex::MultiFab sourceMF(ba_in_use, dm, n_comp, n_ghost);
-    amrex::MultiFab targetMF(ba_in_use, dm, n_comp, n_ghost);
+    amrex::MultiFab sourceMF(ba, dm, n_comp, n_ghost);
+    amrex::MultiFab targetMF(ba, dm, n_comp, n_ghost);
 
     // initializing multifabs
     initializeSourceMultiFab(sourceMF, geom);
@@ -107,14 +118,22 @@ void extendedMain()
     amrex::BoxArray supp_ba;
     tagSource(supp_ba, sourceMF, source_tag_thresh);
 
-    if (!nodal_compute)
+    if (solver_type == 2)
     {
         poisson_solver->solvePoisson(sourceMF, targetMF, supp_ba);
     }
-    else
+    else 
     {
-        poisson_solver->solveNodalPoisson(sourceMF, targetMF, supp_ba);
+        if (!nodal_compute)
+        {
+            poisson_solver->solvePoisson(sourceMF, targetMF, supp_ba);
+        }
+        else
+        {
+            poisson_solver->solveNodalPoisson(sourceMF, targetMF, supp_ba);
+        }
     }
+    
 
     // this line is needed for residual computations
     targetMF.FillBoundary(geom.periodicity());
@@ -127,7 +146,7 @@ void extendedMain()
     amrex::MultiFab residual = computeResidual(sourceMF, targetMF, geom);
     amrex::Print() << "Max. Abs. Residual: " << residual.norminf() << "\n";
 
-    amrex::MultiFab targetMLMG(ba_in_use, dm, n_comp, n_ghost);
+    amrex::MultiFab targetMLMG(ba, dm, n_comp, n_ghost);
     targetMLMG.setVal(0.0);
     if (compare_MLMG && !nodal_compute)
     {
@@ -140,7 +159,7 @@ void extendedMain()
     }
     
     // building a MultiFab to visualize the cells that are being tagged
-    amrex::MultiFab tagRegion(ba_in_use, sourceMF.DistributionMap(), 1, 0);
+    amrex::MultiFab tagRegion(ba, sourceMF.DistributionMap(), 1, 0);
 
     for (amrex::MFIter mfi(tagRegion); mfi.isValid(); ++mfi)
     {
