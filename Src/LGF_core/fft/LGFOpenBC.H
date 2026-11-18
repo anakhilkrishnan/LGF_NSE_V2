@@ -1,6 +1,7 @@
 #ifndef LGFOPENBC_H_
 #define LGFOPENBC_H_
 
+#include <LGFPoissonSolver.H>
 #include <directSumKernel.H>
 
 #include <AMReX_FFT.H>
@@ -65,7 +66,7 @@
  *   phi cells below the domain are left untouched and cells above it read
  *   the wrap-around half, so every target cell must lie inside the domain.
  */
-class LGFOpenBC
+class LGFOpenBC : public LGFPoissonSolver
 {
 private:
 
@@ -120,8 +121,8 @@ public:
     // WRAPPER functions for external calling
     // source and target: same index type, built from xsoln_ba_ref, same dm;
     // source ghosts filled in its cell-centred directions (see above)
-    void solvePoisson(const amrex::MultiFab& source, amrex::MultiFab& target, const amrex::BoxArray& tag_ba);
-    void regridOnto(const amrex::Geometry& new_geom, const amrex::BoxArray& new_ba, const amrex::DistributionMapping& new_dm);
+    void solvePoisson(const amrex::MultiFab& source, amrex::MultiFab& target, const amrex::BoxArray& tag_ba) override;
+    void regridOnto(const amrex::Geometry& new_geom, const amrex::BoxArray& new_ba, const amrex::DistributionMapping& new_dm) override;
 
 };
 

@@ -19,6 +19,9 @@
 
 void extendedMain();
 
+// tags the boxes of phi holding |phi| > tag_thresh * max|phi|; tag_ba is cell centred
+void tagSource(amrex::BoxArray& tag_ba, const amrex::MultiFab& phi, const amrex::Real tag_thresh);
+
 void initializeSourceMultiFab(amrex::MultiFab& phifab, amrex::Geometry& geom);
 
 void syncBCs(amrex::MultiFab& phi_mf_dest, amrex::MultiFab& phi_mf_src, amrex::Geometry& phi_geom, int n_ghost);

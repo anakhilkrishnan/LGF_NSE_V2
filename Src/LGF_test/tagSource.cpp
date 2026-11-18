@@ -1,4 +1,4 @@
-#include <LGFPoissonSolver.H>
+#include <MyFunctions.H>
 
 using namespace amrex;
 

@@ -1,7 +1,10 @@
 # Define the library and its source files
 add_library(LGF_core_lib STATIC
     LGFKernels.H
+    LGFPoissonSolver.H
     directSum/directSumKernel.H
+    directSum/DirectSumLGF.H
+    directSum/directSumLGF.cpp
     fft/LGFOpenBC.H
     fft/LGFOpenBC.cpp
 )

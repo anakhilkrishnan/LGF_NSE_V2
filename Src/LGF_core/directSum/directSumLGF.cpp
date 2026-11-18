@@ -217,8 +217,28 @@ void DirectSumLGF::regridOnto(const amrex::Geometry& new_geom, const amrex::BoxA
 
 void DirectSumLGF::solvePoisson(const amrex::MultiFab& source, amrex::MultiFab& target, const amrex::BoxArray& tag_ba)
 {
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(source.ixType() == target.ixType(),
+        "DirectSumLGF: source and target must share an index type");
+
+    if (source.ixType() == amrex::IndexType::TheCellType())
+    {
+        solveCellPoisson(source, target, tag_ba);
+        return;
+    }
+
+    if (source.ixType() == amrex::IndexType::TheNodeType())
+    {
+        solveNodalPoisson(source, target, tag_ba);
+        return;
+    }
+
+    amrex::Abort("DirectSumLGF: direct summation handles cell-centred and nodal data only");
+}
+
+void DirectSumLGF::solveCellPoisson(const amrex::MultiFab& source, amrex::MultiFab& target, const amrex::BoxArray& tag_ba)
+{
     // adding profiling blocks for Tiny/Base profilers
-    BL_PROFILE("<Compute> solvePoisson()");
+    BL_PROFILE("<Compute> solveCellPoisson()");
 
     AMREX_ALWAYS_ASSERT(source.ixType() == amrex::IndexType::TheCellType());
     AMREX_ALWAYS_ASSERT(target.ixType() == amrex::IndexType::TheCellType());

@@ -52,8 +52,10 @@ class DirectSumLGF : public LGFPoissonSolver
     void regridOnto(const amrex::Geometry& new_geom, const amrex::BoxArray& new_ba, const amrex::DistributionMapping& new_dm) override;
 
     DirectSumLGF(const amrex::Geometry& geom_in, const int n_look_in);
+    // dispatches on the index type: cell-centred and nodal only
     void solvePoisson(const amrex::MultiFab& source, amrex::MultiFab& target, const amrex::BoxArray& tag_ba) override;
-    void solveNodalPoisson(const amrex::MultiFab& source, amrex::MultiFab& target, const amrex::BoxArray& tag_ba) override;
+    void solveCellPoisson(const amrex::MultiFab& source, amrex::MultiFab& target, const amrex::BoxArray& tag_ba);
+    void solveNodalPoisson(const amrex::MultiFab& source, amrex::MultiFab& target, const amrex::BoxArray& tag_ba);
 };
 
 #endif
