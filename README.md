@@ -41,9 +41,11 @@ cmake -B build_mpi -S .. -DAMReX_SPACEDIM=3 -DAMReX_GPU_BACKEND=NONE -DAMReX_OMP
 #(c) for GPU executable 
 cmake -B build_gpu -S .. -DAMReX_SPACEDIM=3 -DAMReX_GPU_BACKEND=CUDA
 
-## this creates the build dir and NSE_test inside Exec. Complete the build process
+## this creates the build dir, NSE_test and LGF_test inside Exec. Complete the build process
 cmake --build <build_dir_name> -j <n_procs>
 ```
+
+Both executables are built by default: `nserun` (the NSE solver, in `Exec/NSE_test`) and `lgfpoisson` (the stand-alone Poisson test bench, in `Exec/LGF_test`). Either can be switched off with `-DLGF_BUILD_NSE=OFF` or `-DLGF_BUILD_TEST=OFF`.
 
 To run the executable:
 ```bash
@@ -73,6 +75,31 @@ vim Logs/log.txt # opens log file in vim
 #(c) checkpoint files (main and alt) are written to Checkpoints/
 vim Checkpoints/main/status.dat # shows if checkpoint was written safely without interrupts and saved time step
 ```
+
+## Repository layout
+
+| Directory | Contents |
+|---|---|
+| `Src/LGF_core` | LGF kernels and the Poisson backends, shared by both executables: `LGFPoissonSolver.H` (the interface), `fft/` (`LGFOpenBC`), `fmm/` (`LGFFastMultipole`), `directSum/` (`DirectSumLGF`), and `LGFSolverFactory` |
+| `Src/NSE_core` | the NSE solver library |
+| `Src/NSE_run` | `nserun`: main, I/O and case headers |
+| `Src/LGF_test` | `lgfpoisson`: the Poisson test bench |
+| `Docs` | Sphinx sources |
+
+The repository was formed by merging LGF_NSE_GPU with LGF_Accelerate (the test bench), keeping the history of both; see `CHANGES.md`.
+
+## Choosing the Poisson backend
+
+Both executables build their Poisson solver through `makeLGFPoissonSolver()`, which reads these inputs:
+
+```
+lgf.solver = fft          # fft (LGFOpenBC) | fmm (LGFFastMultipole) | direct (DirectSumLGF, O(N^2), small checks only)
+lgf.fft_len_quantum = 1   # fft: solver lengths rounded up to a multiple of this
+lgf.fmm_block_size = 16   # fmm: lattice points per block and direction
+lgf.fmm_n_interp = 10     # fmm: nodes per interpolation
+```
+
+With none of them given, the backend is `fft`, built exactly as before the merge. `fft` is fastest when the active region fills most of its bounding box; `fmm` costs O(N) in the active blocks and pays off when the region is sparse. The FMM's error (about 1e-10 relative at the defaults) must stay well below `support_threshold`, or it shows up as spurious support.
 
 ## Contributing to the code
 
