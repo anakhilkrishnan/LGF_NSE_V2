@@ -55,6 +55,15 @@ else()
 endif()
 message(STATUS "LGF_NSE: AMReX_GPU_BACKEND=${AMReX_GPU_BACKEND}, AMReX_OMP=${AMReX_OMP}")
 
+# what to build; LGF_core is always built, both executables link it
+option(LGF_BUILD_NSE  "Build the NSE solver (NSE_core, NSE_run -> nserun)"      ON)
+option(LGF_BUILD_TEST "Build the LGF Poisson test bench (LGF_test -> lgfpoisson)" ON)
+message(STATUS "LGF_NSE: LGF_BUILD_NSE=${LGF_BUILD_NSE}, LGF_BUILD_TEST=${LGF_BUILD_TEST}")
+
+if(AMReX_OMP)
+  find_package(OpenMP REQUIRED)
+endif()
+
 
 # Download AMReX from GitHub
 message("-- Download and configure AMReX from GitHub")
@@ -73,13 +82,23 @@ FetchContent_MakeAvailable(amrex_code)
 cmake_path(GET CMAKE_BINARY_DIR PARENT_PATH BUILD_PARENT_DIR)
 
 
-# adding additional repositories
+# the shared LGF library, then whichever executables were asked for
 add_subdirectory(Src/LGF_core)
-add_subdirectory(Src/NSE_core)
-add_subdirectory(Src/NSE_run) 
 
+if(LGF_BUILD_NSE)
+  add_subdirectory(Src/NSE_core)
+  add_subdirectory(Src/NSE_run)
 
-# make Exec directories in case they're not present
-file(MAKE_DIRECTORY "${BUILD_PARENT_DIR}/NSE_test/Results")
-file(MAKE_DIRECTORY "${BUILD_PARENT_DIR}/NSE_test/Logs")
+  # make Exec directories in case they're not present
+  file(MAKE_DIRECTORY "${BUILD_PARENT_DIR}/NSE_test/Results")
+  file(MAKE_DIRECTORY "${BUILD_PARENT_DIR}/NSE_test/Logs")
+endif()
+
+if(LGF_BUILD_TEST)
+  add_subdirectory(Src/LGF_test)
+
+  # make Exec directories in case they're not present
+  file(MAKE_DIRECTORY "${BUILD_PARENT_DIR}/LGF_test/Results")
+  file(MAKE_DIRECTORY "${BUILD_PARENT_DIR}/LGF_test/Logs")
+endif()
 

@@ -13,9 +13,7 @@
 #include <AMReX_BLProfiler.H>
 #include <string>
 
-#include <LGFPoissonSolver.H>
-#include <DirectSumLGF.H>
-#include <LGFOpenBC.H>
+#include <LGFSolverFactory.H>
 
 void extendedMain();
 

@@ -10,7 +10,7 @@ index_type = (0,0,0)
 domain_lo = -5.0 -5.0 -5.0
 domain_hi = 5.0 5.0 5.0
 
-solver_type = 2
+lgf.solver = fft       # fft | fmm | direct, see Src/LGF_core/LGFSolverFactory.H
 n_lookup = 32
 
 compare_MLMG = false

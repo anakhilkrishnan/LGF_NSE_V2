@@ -17,11 +17,10 @@ void extendedMain()
     auto start_time = amrex::second();
 
     // variables to be read from ParmParse
-    int n_cell, max_grid_size, n_lookup, solver_type;
+    int n_cell, max_grid_size, n_lookup;
     amrex::Real source_tag_thresh;
     amrex::Array<amrex::Real,AMREX_SPACEDIM> phy_dom_lo, phy_dom_hi;
     amrex::IntVect indexing_input;
-    bool nodal_compute = false;
     bool write_plot = false;
     bool compare_MLMG = false;
 
@@ -37,7 +36,6 @@ void extendedMain()
     pp.get("domain_hi", phy_dom_hi);
     pp.get("tagging_threshold", source_tag_thresh);
     pp.get("n_lookup", n_lookup);
-    pp.get("solver_type", solver_type);
 
     pp.query("write_plot", write_plot);
     pp.query("plot_prefix", plot_prefix);
@@ -45,16 +43,9 @@ void extendedMain()
 
     amrex::IndexType indexing(indexing_input);
     amrex::Print() << "Our Index Type for this solve is: " << indexing << "\n";
-    
-    if (solver_type == 1 && (indexing != amrex::IndexType::TheCellType() && indexing != amrex::IndexType::TheNodeType()))
-    {
-        amrex::Abort("Can't do direct sum on edge/face-centered types");
-    }
 
-    if (solver_type != 2 && indexing == amrex::IndexType::TheNodeType())
-    {
-        nodal_compute = true;
-    }
+    // MLMG here is cell-centred only
+    const bool is_cell = (indexing == amrex::IndexType::TheCellType());
 
     // initializing parameters for MultiFabs
     int n_ghost = 1;
@@ -63,10 +54,12 @@ void extendedMain()
     amrex::BoxArray ba;
     amrex::Geometry geom;
 
-    // Define the computational domain
+    // Define the computational domain. The layout is cell-centred, as in the
+    // NSE solver, and the MultiFabs convert() it to the index type of the
+    // solve: n_cell cells, and n_cell + 1 points along nodal directions
     amrex::IntVect dom_lo(AMREX_D_DECL(       0,        0,        0));
     amrex::IntVect dom_hi(AMREX_D_DECL(n_cell-1, n_cell-1, n_cell-1));
-    amrex::Box domain(dom_lo, dom_hi, indexing);
+    amrex::Box domain(dom_lo, dom_hi);
 
     // Define the periodicity
     amrex::Vector<int> is_periodic(AMREX_SPACEDIM, 0); // 0 = not periodic
@@ -85,32 +78,23 @@ void extendedMain()
     // How Boxes are distrubuted among MPI processes
     amrex::DistributionMapping dm(ba);
 
-    
-    // creating source and target multifabs
-    amrex::MultiFab sourceMF(ba, dm, n_comp, n_ghost);
-    amrex::MultiFab targetMF(ba, dm, n_comp, n_ghost);
+    // the BoxArray of the index type being solved for
+    const amrex::BoxArray typed_ba = amrex::convert(ba, indexing);
 
-    // initializing multifabs
+    // creating source and target multifabs
+    amrex::MultiFab sourceMF(typed_ba, dm, n_comp, n_ghost);
+    amrex::MultiFab targetMF(typed_ba, dm, n_comp, n_ghost);
+
+    // initializing multifabs; the source's ghost cells are zeroed and then
+    // filled, as LGFPoissonSolver's contract asks
+    sourceMF.setVal(0.0);
     initializeSourceMultiFab(sourceMF, geom);
+    sourceMF.FillBoundary(geom.periodicity());
     targetMF.setVal(0.0);
 
-    // creating a PoissonSolver object
-    std::unique_ptr<LGFPoissonSolver> poisson_solver;
-
-    if (solver_type == 1)
-    {
-        // create object for direct summation solver
-        poisson_solver = std::make_unique<DirectSumLGF>(geom, n_lookup);    
-    }
-    else if (solver_type == 2)
-    {   
-        // create object for AMReX FMM library
-        poisson_solver = std::make_unique<LGFOpenBC>(geom, n_lookup);
-    }
-    else
-    {
-        amrex::Abort("Solver_type requested does not exist.");
-    }
+    // creating a PoissonSolver object; lgf.solver picks the backend (see
+    // LGFSolverFactory.H)
+    std::unique_ptr<LGFPoissonSolver> poisson_solver = makeLGFPoissonSolver(geom, ba, n_lookup, n_ghost);
 
     auto compute_start_time = amrex::second();
 
@@ -118,22 +102,8 @@ void extendedMain()
     amrex::BoxArray supp_ba;
     tagSource(supp_ba, sourceMF, source_tag_thresh);
 
-    if (solver_type == 2)
-    {
-        poisson_solver->solvePoisson(sourceMF, targetMF, supp_ba);
-    }
-    else 
-    {
-        if (!nodal_compute)
-        {
-            poisson_solver->solvePoisson(sourceMF, targetMF, supp_ba);
-        }
-        else
-        {
-            poisson_solver->solveNodalPoisson(sourceMF, targetMF, supp_ba);
-        }
-    }
-    
+    poisson_solver->solvePoisson(sourceMF, targetMF, supp_ba);
+
 
     // this line is needed for residual computations
     targetMF.FillBoundary(geom.periodicity());
@@ -146,9 +116,9 @@ void extendedMain()
     amrex::MultiFab residual = computeResidual(sourceMF, targetMF, geom);
     amrex::Print() << "Max. Abs. Residual: " << residual.norminf() << "\n";
 
-    amrex::MultiFab targetMLMG(ba, dm, n_comp, n_ghost);
+    amrex::MultiFab targetMLMG(typed_ba, dm, n_comp, n_ghost);
     targetMLMG.setVal(0.0);
-    if (compare_MLMG && !nodal_compute)
+    if (compare_MLMG && is_cell)
     {
         auto mlmg_start_time = amrex::second();
         syncBCs(targetMLMG, targetMF, geom, n_ghost);
@@ -159,7 +129,7 @@ void extendedMain()
     }
     
     // building a MultiFab to visualize the cells that are being tagged
-    amrex::MultiFab tagRegion(ba, sourceMF.DistributionMap(), 1, 0);
+    amrex::MultiFab tagRegion(typed_ba, sourceMF.DistributionMap(), 1, 0);
 
     for (amrex::MFIter mfi(tagRegion); mfi.isValid(); ++mfi)
     {
@@ -173,7 +143,7 @@ void extendedMain()
         BL_PROFILE("<I/O> writingPlotfile");
 
         // building a multiFab with 4 + MLMG components for plotting
-        int numPlotComp = (compare_MLMG && !nodal_compute) ? 5 : 4;
+        int numPlotComp = (compare_MLMG && is_cell) ? 5 : 4;
         amrex::MultiFab plotFab(targetMF.boxArray(), targetMF.DistributionMap(), numPlotComp, 0);
         amrex::MultiFab::Copy(plotFab, sourceMF, 0, 0, 1, 0);
         amrex::MultiFab::Copy(plotFab, targetMF, 0, 1, 1, 0);
@@ -183,7 +153,7 @@ void extendedMain()
         // exporting the names of the MultiFabs
         amrex::Vector<std::string> varnames = {"Source_Phi", "Target_Phi", "Active_Box_Tag", "Residual"};
 
-        if (compare_MLMG && !nodal_compute)
+        if (compare_MLMG && is_cell)
         {
             amrex::MultiFab::Copy(plotFab, targetMLMG, 0, (numPlotComp-1), 1, 0);
             varnames.push_back("MLMG_Target_Phi");
