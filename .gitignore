@@ -16,3 +16,11 @@ out/
 
 # Ignore complete Exec directory, have it local for each machine
 /Exec/*
+
+# Ignore the documentation build, except the files needed to rebuild docs
+Docs/**
+!Docs/source
+!Docs/source/conf.py
+!Docs/source/index.rst
+!Docs/source/manual/
+!Docs/source/manual/**
