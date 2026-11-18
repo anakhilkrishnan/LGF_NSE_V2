@@ -20,7 +20,7 @@
 #include <SolverConfig.H>
 #include <FlowField.H>
 #include <SpatialDiscretization.H>
-#include <LGFOpenBC.H>
+#include <LGFOpenBC.H>     // the search-domain solver; LGFPoissonSolver comes with it
 
 class DomainManager
 {
@@ -85,10 +85,10 @@ class DomainManager
         void computeSuppBoxArr(const FlowField& state, amrex::Real time, bool shedOuterLayer = true); // tagging function
         void initializeSnugDomain(amrex::Real time);
         void restartSnugDomain(const amrex::BoxArray& chk_ba, const amrex::BoxArray& chk_supp_ba, const int transfer_ratio);
-        void initializeVelField(FlowField& init_state, LGFOpenBC& lgf_poisson_solver);
-        void refineVelField(FlowField& state, const FlowField& coarse, const int transfer_ratio, LGFOpenBC& lgf_poisson_solver);        
+        void initializeVelField(FlowField& init_state, LGFPoissonSolver& lgf_poisson_solver);
+        void refineVelField(FlowField& state, const FlowField& coarse, const int transfer_ratio, LGFPoissonSolver& lgf_poisson_solver);        
         void checkAndUpdateSnugDomain(const FlowField& state, amrex::Real time);
-        void checkAndRefreshVelocity(FlowField& state, LGFOpenBC& lgf_poisson_solver, int step);
+        void checkAndRefreshVelocity(FlowField& state, LGFPoissonSolver& lgf_poisson_solver, int step);
         
 
         // supporting functions
@@ -103,7 +103,7 @@ class DomainManager
                                                 amrex::MultiFab& vel_refresh_err_comp,
                                                 const amrex::Array<amrex::MultiFab, N_VORT>& psi,
                                                 amrex::GpuArray<amrex::Real, AMREX_SPACEDIM> const& invdx);
-        void vor2vel(amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>& vel_arr, amrex::Array<amrex::MultiFab, N_VORT>& vort, LGFOpenBC& lgf_poisson_solver);
+        void vor2vel(amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>& vel_arr, amrex::Array<amrex::MultiFab, N_VORT>& vort, LGFPoissonSolver& lgf_poisson_solver);
 };  
 
 #endif

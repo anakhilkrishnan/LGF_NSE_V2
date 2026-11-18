@@ -140,7 +140,9 @@ void DomainManager::initializeSnugDomain(amrex::Real time)
     // setting supp_ba to ba so that everything in the domain is computed
     supp_ba = ba;
 
-    // initializing coarse search domain with velocity using vor2vel
+    // initializing coarse search domain with velocity using vor2vel. Always
+    // LGFOpenBC, whatever lgf.solver says: the search domain is one dense
+    // box, which is the FFT's best case
     LGFOpenBC search_poisson_solver(geom, ba, n_lookup, n_ghost_max, 1);
     vor2vel(search_state.getVelArr(), search_vort, search_poisson_solver);
     // setBoundary() call not needed as vor2vel handles ghost cells as well
@@ -220,7 +222,7 @@ void DomainManager::restartSnugDomain(const amrex::BoxArray& chk_ba, const amrex
     defineScratch();
 }
 
-void DomainManager::initializeVelField(FlowField& init_state, LGFOpenBC& lgf_poisson_solver)
+void DomainManager::initializeVelField(FlowField& init_state, LGFPoissonSolver& lgf_poisson_solver)
 {
     BL_PROFILE("<Compute> initializeVelField()");
 
@@ -258,7 +260,7 @@ void DomainManager::initializeVelField(FlowField& init_state, LGFOpenBC& lgf_poi
 
 
 void DomainManager::refineVelField(FlowField& state, const FlowField& coarse, const int transfer_ratio,
-                                   LGFOpenBC& lgf_poisson_solver)
+                                   LGFPoissonSolver& lgf_poisson_solver)
 {
     BL_PROFILE("<Compute> refineVelField()");
 
@@ -559,7 +561,7 @@ void DomainManager::fillVelocity(amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>& 
 
 void DomainManager::vor2vel(amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>& vel_arr,
                             amrex::Array<amrex::MultiFab, N_VORT>& vort,
-                            LGFOpenBC& lgf_poisson_solver)
+                            LGFPoissonSolver& lgf_poisson_solver)
 {
     BL_PROFILE("<Compute> DomainManager::vor2vel()");
 
@@ -600,7 +602,7 @@ void DomainManager::vor2vel(amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>& vel_a
     // setBoundary call not needed here, since refresh now updates ghost cells
 }
 
-void DomainManager::checkAndRefreshVelocity(FlowField& state, LGFOpenBC& lgf_poisson_solver, int step)
+void DomainManager::checkAndRefreshVelocity(FlowField& state, LGFPoissonSolver& lgf_poisson_solver, int step)
 {
 #ifdef ENABLE_DEBUG_CHECKS
 #ifdef AMREX_USE_MPI

@@ -36,6 +36,13 @@ int_fact_threshold = 1.0e-10
 
 n_lookup = 16
 
+# Poisson backend (see Src/LGF_core/LGFSolverFactory.H); leaving these out
+# gives lgf.solver = fft with its defaults
+# lgf.solver = fft              # fft | fmm | direct
+# lgf.fft_len_quantum = 1
+# lgf.fmm_block_size = 16
+# lgf.fmm_n_interp = 10
+
 # interface parameters
 track_interface = true
 interface_scheme = WENO5

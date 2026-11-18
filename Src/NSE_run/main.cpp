@@ -112,7 +112,7 @@ void extendedMain()
             FlowField chk_state(chk.geom, chk.ba, amrex::DistributionMapping(chk.ba), sol_cfg.n_comp, sol_cfg.n_ghost);
             io.readChkData(chk, chk_state);
             chk_state.setBoundary();
-            dmgr.refineVelField(state_n, chk_state, transfer_ratio, workspace.lgf_poisson_solver);
+            dmgr.refineVelField(state_n, chk_state, transfer_ratio, *workspace.lgf_poisson_solver);
         }
 
         // initialize pressure fields
@@ -133,7 +133,7 @@ void extendedMain()
         step_keeper = 0;
 
         // populate initial conditions
-        dmgr.initializeVelField(state_n, workspace.lgf_poisson_solver);
+        dmgr.initializeVelField(state_n, *workspace.lgf_poisson_solver);
         
         // populating pressure based on divergence of Navier-Stokes at initial conditions
         workspace.initializePresField(state_n, dmgr.getSuppBoxArr(), time_keeper);
@@ -203,7 +203,7 @@ void extendedMain()
             if (tracker) { tracker->regrid(dmgr.getGeom(), dmgr.getBoxArr(), dmgr.getDistMap()); }
         }
 
-        dmgr.checkAndRefreshVelocity(state_n, workspace.lgf_poisson_solver, step_keeper);
+        dmgr.checkAndRefreshVelocity(state_n, *workspace.lgf_poisson_solver, step_keeper);
 
         if (regrid_plots) { io.writePlot(PlotKind::RegridPost, step_keeper, time_keeper, state_n, dmgr, tracker.get()); }
 

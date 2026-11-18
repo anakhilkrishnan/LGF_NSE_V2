@@ -12,7 +12,7 @@
 #include <FlowField.H>
 #include <SpatialDiscretization.H>
 #include <IFHERK.H>
-#include <LGFOpenBC.H>
+#include <LGFSolverFactory.H>
 #include <InterfaceTracker.H>
 
 class ProjectionWorkspace
@@ -40,8 +40,9 @@ class ProjectionWorkspace
         void defineScratch(const amrex::BoxArray& ba_in, const amrex::DistributionMapping& dm_in);
 
     public: 
-        // public, so it can be passed to DomainManager when field needs to be updated
-        LGFOpenBC lgf_poisson_solver;
+        // public, so it can be passed to DomainManager when field needs to be
+        // updated; the backend is chosen by lgf.solver (see LGFSolverFactory.H)
+        std::unique_ptr<LGFPoissonSolver> lgf_poisson_solver;
 
         amrex::MultiFab divU; // refers to divU star, the RHS of what the Poisson solver sees
 
