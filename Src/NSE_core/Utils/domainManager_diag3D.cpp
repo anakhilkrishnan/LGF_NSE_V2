@@ -164,7 +164,7 @@ void DomainManager::initializeSnugDomain()
     defineScratch();
 }
 
-void DomainManager::initializeVelField(FlowField& init_state, LGFOpenBC& lgf_poisson_solver)
+void DomainManager::initializeVelField(FlowField& init_state, LGFPoissonSolver& lgf_poisson_solver)
 {
     // setting supp_ba as ba to initialize everywhere in the domain
     supp_ba = ba;
@@ -464,7 +464,7 @@ void DomainManager::fillVelocity(amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>& 
 
 void DomainManager::vor2vel(amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>& vel_arr,
                             amrex::Array<amrex::MultiFab, N_VORT>& vort,
-                            LGFOpenBC& lgf_poisson_solver)
+                            LGFPoissonSolver& lgf_poisson_solver)
 {
     BL_PROFILE("<Compute> DomainManager::vor2vel()");
 
@@ -505,7 +505,7 @@ void DomainManager::vor2vel(amrex::Array<amrex::MultiFab, AMREX_SPACEDIM>& vel_a
     // setBoundary call not needed here, since refresh now updates ghost cells
 }
 
-void DomainManager::checkAndRefreshVelocity(FlowField& state, LGFOpenBC& lgf_poisson_solver, int step)
+void DomainManager::checkAndRefreshVelocity(FlowField& state, LGFPoissonSolver& lgf_poisson_solver, int step)
 {
 #ifdef ENABLE_DEBUG_CHECKS
 #ifdef AMREX_USE_MPI

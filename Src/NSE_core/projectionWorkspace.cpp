@@ -5,7 +5,7 @@ ProjectionWorkspace::ProjectionWorkspace(const amrex::Geometry& geom_in, const a
     : n_comp(config.n_comp), n_ghost(config.n_ghost),
       ifherk(getRKButcher(), geom_in, config.invRe, config.set_dt, config.n_IF, config.int_fact_eps),
       stage(geom_in, ba_in, dm_in, config.n_comp, config.n_ghost),
-      lgf_poisson_solver(geom_in, ba_in, config.n_lookup, config.n_ghost_max)
+      lgf_poisson_solver(makeLGFPoissonSolver(geom_in, ba_in, config.n_lookup, config.n_ghost_max))
 {
     AMREX_ALWAYS_ASSERT_WITH_MESSAGE(n_ghost >= ifherk.nGhostRequired(),
         "n_ghost must be at least the IF stencil half-width");
@@ -143,7 +143,7 @@ void ProjectionWorkspace::initializePresField(FlowField& init_state,
     }
 
     divU.FillBoundary(init_state.getGeom().periodicity());
-    lgf_poisson_solver.solvePoisson(divU, init_state.getPres(), init_supp_ba);
+    lgf_poisson_solver->solvePoisson(divU, init_state.getPres(), init_supp_ba);
     init_state.getPres().mult(1.0 / (ifherk.aT(1,1) * ifherk.timeStep()), 0);      // dhat -> d, Eq. (31)
     init_state.getPres().FillBoundary(init_state.getGeom().periodicity());
 
@@ -217,7 +217,7 @@ void ProjectionWorkspace::advanceTimeStep(FlowField& state_n, const amrex::BoxAr
             { div_arr(i2,j2,k2) = discreteDivergenceF2C(i2,j2,k2, invdx, r_arr); });
         }
         divU.FillBoundary(geom.periodicity());
-        lgf_poisson_solver.solvePoisson(divU, stage.getPres(), supp_ba);
+        lgf_poisson_solver->solvePoisson(divU, stage.getPres(), supp_ba);
         stage.getPres().FillBoundary(geom.periodicity());
 
         // --- rhs_vel = G dhat  (used twice: for u^i and for w^{i,i}) -------
@@ -288,7 +288,7 @@ void ProjectionWorkspace::regridOnto(const amrex::Geometry& new_geom, const amre
     ifherk.setGeometry(new_geom);
 
     // update the Poisson solver
-    lgf_poisson_solver.regridOnto(new_geom, new_ba, new_dm);
+    lgf_poisson_solver->regridOnto(new_geom, new_ba, new_dm);
 
     // the interface registers live in InterfaceTracker, which drops them in its own regrid()
 }
