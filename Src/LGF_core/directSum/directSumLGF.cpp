@@ -18,15 +18,35 @@ void DirectSumLGF::consolidateMultiFab(const amrex::MultiFab& phi, const amrex::
     const int nprocs = amrex::ParallelDescriptor::NProcs();
     const int num_local_boxes = phi.local_size();
 
-    const bool is_nodal = (phi.ixType() == amrex::IndexType::TheNodeType());
+    // The support is convert(tag_ba, type), point by point, as in every other
+    // backend: a box is packed if it reaches the support, and only its points
+    // inside the support are kept. On a nodal MultiFab, validbox()es SHARE
+    // their boundary nodes, so each point is also kept by only one packed box,
+    // the first in BoxArray order that holds it. (An OwnerMask would hand a
+    // seam node to its owner even when that box is not packed, dropping it.)
+    const amrex::BoxArray keep = amrex::convert(tag_ba, phi.ixType());
+    const amrex::BoxArray& phi_ba = phi.boxArray();
 
-    // On a nodal MultiFab, validbox()es SHARE their boundary nodes, so a naive
-    // pack counts seam nodes once per owning box. OwnerMask marks exactly one
-    // owner per node; non-owners are packed as 0.0 so each node contributes once.
-    std::unique_ptr<amrex::iMultiFab> owner;
-    if (is_nodal) {
-        owner = amrex::OwnerMask(phi, geom.periodicity());   // already a unique_ptr, just move-assign
+    amrex::Vector<amrex::Box> h_keep_boxes(keep.size());
+    for (int b = 0; b < keep.size(); ++b) { h_keep_boxes[b] = keep[b]; }
+
+    // packed boxes, all ranks', in BoxArray order; packed_rank: position in that list
+    amrex::Vector<amrex::Box> h_packed_boxes;
+    amrex::Vector<int> packed_rank(phi_ba.size(), -1);
+    for (int b = 0; b < phi_ba.size(); ++b)
+    {
+        if (!keep.intersects(phi_ba[b])) { continue; }
+        packed_rank[b] = static_cast<int>(h_packed_boxes.size());
+        h_packed_boxes.push_back(phi_ba[b]);
     }
+
+    amrex::Gpu::DeviceVector<amrex::Box> d_keep_boxes(h_keep_boxes.size());
+    amrex::Gpu::DeviceVector<amrex::Box> d_packed_boxes(h_packed_boxes.size());
+    amrex::Gpu::copy(amrex::Gpu::hostToDevice, h_keep_boxes.begin(), h_keep_boxes.end(), d_keep_boxes.begin());
+    amrex::Gpu::copy(amrex::Gpu::hostToDevice, h_packed_boxes.begin(), h_packed_boxes.end(), d_packed_boxes.begin());
+    const amrex::Box* keep_ptr = d_keep_boxes.dataPtr();
+    const amrex::Box* packed_ptr = d_packed_boxes.dataPtr();
+    const int n_keep = keep.size();
 
     int my_data_size = 0;
     int my_meta_size = 0; // Index counter for active boxes
@@ -38,7 +58,7 @@ void DirectSumLGF::consolidateMultiFab(const amrex::MultiFab& phi, const amrex::
     for (amrex::MFIter mfi(phi); mfi.isValid(); ++mfi)
     {
         const amrex::Box& bx = mfi.validbox();
-        if (!tag_ba.intersects(amrex::enclosedCells(bx))) // if box contains a cell above threshold, box gets packed
+        if (packed_rank[mfi.index()] < 0) // if box reaches the support, box gets packed
         {
             continue;
         }
@@ -69,7 +89,8 @@ void DirectSumLGF::consolidateMultiFab(const amrex::MultiFab& phi, const amrex::
     for (amrex::MFIter mfi(phi); mfi.isValid(); ++mfi)
     {
         const amrex::Box& bx = mfi.validbox();
-        if (!tag_ba.intersects(amrex::enclosedCells(bx)))
+        const int my_rank = packed_rank[mfi.index()];
+        if (my_rank < 0)
         {
             continue;
         }
@@ -81,12 +102,21 @@ void DirectSumLGF::consolidateMultiFab(const amrex::MultiFab& phi, const amrex::
         const auto lo = bx.smallEnd();
         const auto len = bx.length();
 
-        amrex::Array4<int const> own_arr;
-        if (is_nodal) { own_arr = owner->const_array(mfi); }
-        const bool skip_unowned = is_nodal;
-
         amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k)
         {
+            const amrex::IntVect iv(AMREX_D_DECL(i, j, k));
+
+            // inside the support, and not already kept by an earlier packed box
+            bool is_kept = false;
+            for (int b = 0; b < n_keep; ++b)
+            {
+                if (keep_ptr[b].contains(iv)) { is_kept = true; break; }
+            }
+            for (int b = 0; b < my_rank && is_kept; ++b)
+            {
+                if (packed_ptr[b].contains(iv)) { is_kept = false; }
+            }
+
             // flatten 3D coordinates to 1D continuous memory array
             int ii = i - lo[0];
             int jj = AMREX_SPACEDIM >= 2 ? j - lo[1] : 0;
@@ -97,9 +127,7 @@ void DirectSumLGF::consolidateMultiFab(const amrex::MultiFab& phi, const amrex::
 
             int flat_idx = ii + (jj * len_x) + (kk * len_x * len_y);
 
-            d_data_ptr[offset + flat_idx] =
-                (skip_unowned && own_arr(i,j,k) == 0) ? amrex::Real(0.0)
-                                                      : phi_arr(i, j, k);
+            d_data_ptr[offset + flat_idx] = is_kept ? phi_arr(i, j, k) : amrex::Real(0.0);
         });
     }
 
