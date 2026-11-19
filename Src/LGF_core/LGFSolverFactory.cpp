@@ -4,12 +4,21 @@ std::unique_ptr<LGFPoissonSolver> makeLGFPoissonSolver(const amrex::Geometry& ge
                                                        int n_lookup, int n_ghost_max)
 {
     std::string solver_name = "fft";
+
+    amrex::ParmParse pp("lgf");
+    pp.query("solver", solver_name);
+
+    return makeLGFPoissonSolver(solver_name, geom, xsoln_ba, n_lookup, n_ghost_max);
+}
+
+std::unique_ptr<LGFPoissonSolver> makeLGFPoissonSolver(const std::string& solver_name, const amrex::Geometry& geom,
+                                                       const amrex::BoxArray& xsoln_ba, int n_lookup, int n_ghost_max)
+{
     int len_quantum = 1;
     int n_block = 16;
     int n_interp = 10;
 
     amrex::ParmParse pp("lgf");
-    pp.query("solver", solver_name);
     pp.query("fft_len_quantum", len_quantum);
     pp.query("fmm_block_size", n_block);
     pp.query("fmm_n_interp", n_interp);

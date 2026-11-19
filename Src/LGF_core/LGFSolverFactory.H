@@ -30,4 +30,10 @@
 std::unique_ptr<LGFPoissonSolver> makeLGFPoissonSolver(const amrex::Geometry& geom, const amrex::BoxArray& xsoln_ba,
                                                        int n_lookup, int n_ghost_max);
 
+// the same, for the backend named by solver_name rather than lgf.solver;
+// the other lgf.* entries are still read. For callers that need two
+// backends side by side, e.g. a test against a reference solver
+std::unique_ptr<LGFPoissonSolver> makeLGFPoissonSolver(const std::string& solver_name, const amrex::Geometry& geom,
+                                                       const amrex::BoxArray& xsoln_ba, int n_lookup, int n_ghost_max);
+
 #endif
