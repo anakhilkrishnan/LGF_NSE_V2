@@ -223,16 +223,20 @@ void DirectSumLGF::solvePoisson(const amrex::MultiFab& source, amrex::MultiFab& 
     if (source.ixType() == amrex::IndexType::TheCellType())
     {
         solveCellPoisson(source, target, tag_ba);
-        return;
     }
-
-    if (source.ixType() == amrex::IndexType::TheNodeType())
+    else if (source.ixType() == amrex::IndexType::TheNodeType())
     {
         solveNodalPoisson(source, target, tag_ba);
-        return;
+    }
+    else
+    {
+        amrex::Abort("DirectSumLGF: direct summation handles cell-centred and nodal data only");
     }
 
-    amrex::Abort("DirectSumLGF: direct summation handles cell-centred and nodal data only");
+    // both solves skip ghost cells that another box covers; fill those from
+    // the box that covers them, so that every target cell is written, as
+    // LGFPoissonSolver's contract says
+    target.FillBoundary(geom.periodicity());
 }
 
 void DirectSumLGF::solveCellPoisson(const amrex::MultiFab& source, amrex::MultiFab& target, const amrex::BoxArray& tag_ba)
