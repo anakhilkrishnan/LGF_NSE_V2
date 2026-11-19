@@ -11,16 +11,27 @@
 #include <AMReX_PlotFileUtil.H>
 #include <AMReX_ParmParse.H>
 #include <AMReX_BLProfiler.H>
+#include <fstream>
+#include <iomanip>
+#include <limits>
+#include <sstream>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <LGFSolverFactory.H>
+#include <SourceField.H>
+#include <TestSuite.H>
 
-void extendedMain();
+// runs the test suite; returns the number of failed (case, index type) runs
+int extendedMain();
 
 // tags the boxes of phi holding |phi| > tag_thresh * max|phi|; tag_ba is cell centred
 void tagSource(amrex::BoxArray& tag_ba, const amrex::MultiFab& phi, const amrex::Real tag_thresh);
 
-void initializeSourceMultiFab(amrex::MultiFab& phifab, amrex::Geometry& geom);
+// f of the given case on phi_mf, at each point's own position for its index
+// type; ghost cells zeroed, then filled where boxes neighbour each other
+void initializeSourceMultiFab(amrex::MultiFab& phi_mf, const amrex::Geometry& phi_geom, SourceCase source_case);
 
 void syncBCs(amrex::MultiFab& phi_mf_dest, amrex::MultiFab& phi_mf_src, amrex::Geometry& phi_geom, int n_ghost);
 void solveMLMG(const amrex::MultiFab& source, amrex::MultiFab& target, const amrex::Geometry& geom);

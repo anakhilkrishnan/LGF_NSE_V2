@@ -5,167 +5,62 @@ int main(int argc, char* argv[])
     amrex::Initialize(argc,argv);
 
     amrex::Print() << "Launching test run for LGF Core...\n";
-    extendedMain();
+    const int n_fail = extendedMain();
 
     amrex::Finalize();
-    return 0;
+
+    // non-zero when any check failed, so scripts can tell
+    return (n_fail > 0) ? 1 : 0;
 }
 
-void extendedMain()
+int extendedMain()
 {
     // marking start to track runtimes
     auto start_time = amrex::second();
 
-    // variables to be read from ParmParse
-    int n_cell, max_grid_size, n_lookup;
-    amrex::Real source_tag_thresh;
-    amrex::Array<amrex::Real,AMREX_SPACEDIM> phy_dom_lo, phy_dom_hi;
-    amrex::IntVect indexing_input;
-    bool write_plot = false;
-    bool compare_MLMG = false;
+    // every input, read once; see TestSuite.H and Utils/inputs
+    const BenchConfig config = readBenchConfig();
 
-    // setting a default plotfile prefix in case not specified in inputs
-    std::string plot_prefix = "./Results/plt";
+    // the background layout: the whole domain, cell centred. Every case is
+    // tagged on it, and with layout = full it is also the layout solved on
+    amrex::Box domain(amrex::IntVect(0), amrex::IntVect(config.n_cell - 1));
+    amrex::BoxArray ba(domain);
+    ba.maxSize(config.max_grid_size);
 
-    // reading inputs file
-    amrex::ParmParse pp;
-    pp.get("n_cell",n_cell);
-    pp.get("max_grid_size",max_grid_size);
-    pp.get("index_type", indexing_input);
-    pp.get("domain_lo", phy_dom_lo);
-    pp.get("domain_hi", phy_dom_hi);
-    pp.get("tagging_threshold", source_tag_thresh);
-    pp.get("n_lookup", n_lookup);
-
-    pp.query("write_plot", write_plot);
-    pp.query("plot_prefix", plot_prefix);
-    pp.query("compare_MLMG", compare_MLMG);
-
-    amrex::IndexType indexing(indexing_input);
-    amrex::Print() << "Our Index Type for this solve is: " << indexing << "\n";
-
-    // MLMG here is cell-centred only
-    const bool is_cell = (indexing == amrex::IndexType::TheCellType());
-
-    // initializing parameters for MultiFabs
-    int n_ghost = 1;
-    int n_comp = 1;
-
-    amrex::BoxArray ba;
-    amrex::Geometry geom;
-
-    // Define the computational domain. The layout is cell-centred, as in the
-    // NSE solver, and the MultiFabs convert() it to the index type of the
-    // solve: n_cell cells, and n_cell + 1 points along nodal directions
-    amrex::IntVect dom_lo(AMREX_D_DECL(       0,        0,        0));
-    amrex::IntVect dom_hi(AMREX_D_DECL(n_cell-1, n_cell-1, n_cell-1));
-    amrex::Box domain(dom_lo, dom_hi);
-
-    // Define the periodicity
+    amrex::RealBox real_box(config.domain_lo, config.domain_hi);
     amrex::Vector<int> is_periodic(AMREX_SPACEDIM, 0); // 0 = not periodic
+    amrex::Geometry geom;
+    geom.define(domain, &real_box, amrex::CoordSys::cartesian, is_periodic.data());
 
-    // Initialize the boxarray "ba" from the single box "bx"
-    ba.define(domain);
-    // Break up boxarray "ba" into chunks no larger than "max_grid_size" along a direction
-    ba.maxSize(max_grid_size);
-
-    // This defines the physical box
-    amrex::RealBox real_box(phy_dom_lo, phy_dom_hi);
-
-    // This defines a Geometry object
-    geom.define(domain,&real_box,amrex::CoordSys::cartesian,is_periodic.data());
-
-    // How Boxes are distrubuted among MPI processes
     amrex::DistributionMapping dm(ba);
 
-    // the BoxArray of the index type being solved for
-    const amrex::BoxArray typed_ba = amrex::convert(ba, indexing);
+    const amrex::Vector<TestCase> test_suite = loadTestSuite(config.case_names);
 
-    // creating source and target multifabs
-    amrex::MultiFab sourceMF(typed_ba, dm, n_comp, n_ghost);
-    amrex::MultiFab targetMF(typed_ba, dm, n_comp, n_ghost);
+    amrex::Print() << "Running " << test_suite.size() << " case(s) x " << config.index_types.size()
+                   << " index type(s), lgf.solver = " << config.solver_name
+                   << ", reference_solver = " << config.reference_name
+                   << ", layout = " << config.layout << ", n_iter = " << config.n_iter << "\n";
 
-    // initializing multifabs; the source's ghost cells are zeroed and then
-    // filled, as LGFPoissonSolver's contract asks
-    sourceMF.setVal(0.0);
-    initializeSourceMultiFab(sourceMF, geom);
-    sourceMF.FillBoundary(geom.periodicity());
-    targetMF.setVal(0.0);
+    // with reuse_solver, one solver follows the whole run
+    std::unique_ptr<LGFPoissonSolver> shared_solver;
+    amrex::Vector<CaseResult> results;
 
-    // creating a PoissonSolver object; lgf.solver picks the backend (see
-    // LGFSolverFactory.H)
-    std::unique_ptr<LGFPoissonSolver> poisson_solver = makeLGFPoissonSolver(geom, ba, n_lookup, n_ghost);
-
-    auto compute_start_time = amrex::second();
-
-    // running the tagging algorithmn and obtaining the box tags as an array of 0s and 1s
-    amrex::BoxArray supp_ba;
-    tagSource(supp_ba, sourceMF, source_tag_thresh);
-
-    poisson_solver->solvePoisson(sourceMF, targetMF, supp_ba);
-
-
-    // this line is needed for residual computations
-    targetMF.FillBoundary(geom.periodicity());
-
-    // marking end time and elapsed time
-    auto compute_end_time = amrex::second();
-    auto compute_time = compute_end_time - compute_start_time;
-    amrex::Print() << "Time taken for computation: " << compute_time << "\n";
-
-    amrex::MultiFab residual = computeResidual(sourceMF, targetMF, geom);
-    amrex::Print() << "Max. Abs. Residual: " << residual.norminf() << "\n";
-
-    amrex::MultiFab targetMLMG(typed_ba, dm, n_comp, n_ghost);
-    targetMLMG.setVal(0.0);
-    if (compare_MLMG && is_cell)
+    for (const TestCase& test_case : test_suite)
     {
-        auto mlmg_start_time = amrex::second();
-        syncBCs(targetMLMG, targetMF, geom, n_ghost);
-        solveMLMG(sourceMF, targetMLMG, geom);
-        auto mlmg_end_time = amrex::second();
-        auto mlmg_compute_time = mlmg_end_time - mlmg_start_time;
-        amrex::Print() << "Time taken for MLMG solve: " << mlmg_compute_time << "\n";
-    }
-    
-    // building a MultiFab to visualize the cells that are being tagged
-    amrex::MultiFab tagRegion(typed_ba, sourceMF.DistributionMap(), 1, 0);
+        const CaseLayout layout = buildCaseLayout(test_case, config, geom, ba, dm);
 
-    for (amrex::MFIter mfi(tagRegion); mfi.isValid(); ++mfi)
-    {
-        const amrex::Box& bx = mfi.validbox();
-        tagRegion[mfi].setVal<amrex::RunOn::Device>(supp_ba.intersects(amrex::enclosedCells(bx)) ? 1.0 : 0.0);
+        amrex::Print() << "\n== " << test_case.name << ": " << test_case.description << "\n"
+                       << "   " << layout.supp_ba.size() << " tagged boxes (" << layout.n_supp_cells << " cells), "
+                       << "solve layout " << layout.soln_ba.size() << " boxes (" << layout.n_soln_cells << " cells, "
+                       << 100.0 * amrex::Real(layout.n_soln_cells) / amrex::Real(layout.n_bbox_cells)
+                       << "% of its bounding box)\n";
+
+        const amrex::Vector<CaseResult> case_results = runTestCase(test_case, config, geom, layout, shared_solver);
+        results.insert(results.end(), case_results.begin(), case_results.end());
     }
 
-    if (write_plot)
-    {
-        // adding profiling blocks for Tiny/Base profilers
-        BL_PROFILE("<I/O> writingPlotfile");
-
-        // building a multiFab with 4 + MLMG components for plotting
-        int numPlotComp = (compare_MLMG && is_cell) ? 5 : 4;
-        amrex::MultiFab plotFab(targetMF.boxArray(), targetMF.DistributionMap(), numPlotComp, 0);
-        amrex::MultiFab::Copy(plotFab, sourceMF, 0, 0, 1, 0);
-        amrex::MultiFab::Copy(plotFab, targetMF, 0, 1, 1, 0);
-        amrex::MultiFab::Copy(plotFab, tagRegion, 0, 2, 1, 0);
-        amrex::MultiFab::Copy(plotFab, residual, 0, 3, 1, 0);
-
-        // exporting the names of the MultiFabs
-        amrex::Vector<std::string> varnames = {"Source_Phi", "Target_Phi", "Active_Box_Tag", "Residual"};
-
-        if (compare_MLMG && is_cell)
-        {
-            amrex::MultiFab::Copy(plotFab, targetMLMG, 0, (numPlotComp-1), 1, 0);
-            varnames.push_back("MLMG_Target_Phi");
-        }
-        
-        // writing a single leve plotfile
-        const std::string& plotfile_name = amrex::Concatenate(plot_prefix, n_cell);
-        amrex::Print() << "Writing plotfile to: " << plotfile_name << "\n";
-        WriteSingleLevelPlotfile(plotfile_name, plotFab, varnames, geom, 0.0, 0);
-        amrex::Print() << "Plotfile written to: " << plotfile_name << "\n";
-    }
-    
+    printSummary(results, config);
+    writeSummary(results, config);
 
     auto end_time = amrex::second();
     auto elapsed_time = end_time - start_time;
@@ -183,4 +78,9 @@ void extendedMain()
     amrex::Print() << "Max compute time (Slowest Rank): " << max_time << " s\n"
                    << "Min compute time (Fastest Rank): " << min_time << " s\n"
                    << "Time spread (Load Imbalance)   : " << (max_time - min_time) << " s\n";
+
+    int n_fail = 0;
+    for (const CaseResult& result : results) { n_fail += result.is_pass ? 0 : 1; }
+
+    return n_fail;
 }

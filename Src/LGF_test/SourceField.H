@@ -1,13 +1,80 @@
 #ifndef SOURCEFIELD_H_
 #define SOURCEFIELD_H_
 
-#include <AMReX_Geometry.H>
-#include <AMReX_MultiFab.H>
-#include <AMReX_BCRec.H>
+#include <AMReX_REAL.H>
+#include <AMReX_Extension.H>
+#include <AMReX_GpuQualifiers.H>
 #include <AMReX_Math.H>
 
+#include <cmath>
+
+// ---------------------------------------------------------------------------
+// Source fields for the Poisson test bench. Every case follows the same contract:
+//   x, y, z : physical coordinates (the 2D build passes z = 0)
+//   returns : f(x, y, z)
+// f is compactly supported with a hard cut, so it is EXACTLY zero outside a
+// known region and tagging finds a crisp support. Coordinates are absolute;
+// the cases are laid out for the default domain [-5, 5]^d. Parameters live
+// inside each case; edit them there. The cases are listed by name in
+// TestSuite.H (loadTestCase), and sourceField() at the bottom dispatches.
+// ---------------------------------------------------------------------------
+
+namespace lgf_source
+{
+    // exp(-CUT) is the largest value thrown away by any compact-support cut
+    static constexpr amrex::Real CUT = 30.0;
+}
+
+// strength * exp(-r2 / (2 sigma^2)), exactly zero where that is below exp(-CUT)
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+amrex::Real cutGaussian (amrex::Real r2, amrex::Real sigma, amrex::Real strength) noexcept
+{
+    const amrex::Real arg = r2 / (amrex::Real(2.0) * sigma * sigma);
+
+    return (arg >= lgf_source::CUT) ? amrex::Real(0.0) : strength * std::exp(-arg);
+}
+
+// squared distance from (x, y, z) to (cx, cy, cz); z terms drop out in 2D
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+amrex::Real distanceSquared (amrex::Real x, amrex::Real y, amrex::Real z,
+                             amrex::Real cx, amrex::Real cy, amrex::Real cz) noexcept
+{
+    amrex::ignore_unused(z, cz);
+
+    return AMREX_D_TERM((x - cx)*(x - cx), + (y - cy)*(y - cy), + (z - cz)*(z - cz));
+}
+
+// ---------------------------------------------------------------------------
+// single_blob: one Gaussian, centre off the lattice. The plain monopole,
+// u ~ -1/(4 pi r) far away; the smallest support of the suite.
+// ---------------------------------------------------------------------------
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+amrex::Real singleBlobSource (amrex::Real x, amrex::Real y, amrex::Real z) noexcept
+{
+    constexpr amrex::Real sigma = 0.1;
+    constexpr amrex::Real cx = 0.1, cy = 0.25, cz = -0.15;
+
+    return cutGaussian(distanceSquared(x, y, z, cx, cy, cz), sigma, 1.0);
+}
+
+// ---------------------------------------------------------------------------
+// dipole: two opposite Gaussians, zero net charge. The monopole cancels, so
+// the far field is the much weaker dipole term; checks that the far-field
+// approximation of a solver does not leave a monopole-sized error behind.
+// ---------------------------------------------------------------------------
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+amrex::Real dipoleSource (amrex::Real x, amrex::Real y, amrex::Real z) noexcept
+{
+    constexpr amrex::Real sigma = 0.1;
+    constexpr amrex::Real cx = 0.05, cy = 0.1, cz = -0.05;
+    constexpr amrex::Real half_sep = 0.3;      // along x
+
+    return cutGaussian(distanceSquared(x, y, z, cx - half_sep, cy, cz), sigma,  1.0)
+         + cutGaussian(distanceSquared(x, y, z, cx + half_sep, cy, cz), sigma, -1.0);
+}
+
 /**
- * CLUSTER-OF-BLOBS SOURCE FIELD
+ * blob_cluster: CLUSTER OF BLOBS
  *
  *   f(x) = sum_{n=0}^{N-1} c_n * exp( -|x - p_n|^2 / (2 sigma^2) )
  *
@@ -73,19 +140,15 @@
  * TWO DIFFERENT SPEEDUPS -- DON'T CONFUSE THEM
  *
  *   directSumLGF costs O(N_tagged_src * N_tgt), so restricting the source to
- *   the tagged boxes cuts the work by exactly the tagged fraction. That is the
- *   "tagging catches the cluster" demo, and with CLUSTER_R = 1 it works
- *   straight away.
+ *   the tagged boxes cuts the work by exactly the tagged fraction.
  *
- *   LGFOpenBC costs O(V log V) where V is the DOUBLED BOUNDING BOX of
- *   (target boxes) U (tagged boxes) -- see LGFOpenBC::makeDomain. With the
- *   centres filling the unit ball and the answer wanted on all of [-1,1]^3,
- *   that bounding box is the whole domain whether or not anything is tagged,
- *   so tagging buys nothing but a cheaper RHS copy. The FFT-side lever is not
- *   tagging the SOURCE, it is shrinking the region the answer is WANTED in --
- *   which is exactly what vor2vel() does in the NSE solver. To demo that here,
- *   set CLUSTER_R = 0.35 and build the target on tag_ba: the bounding box goes
- *   from 2.0 to ~1.09 a side, i.e. (2.0/1.09)^3 = 6.2x less transform volume.
+ *   LGFOpenBC costs O(V log V) where V is the doubled bounding box of the
+ *   TARGET layout, so its lever is shrinking the region the answer is wanted
+ *   in, which is what vor2vel() does in the NSE solver. The bench now does
+ *   the same: with layout = snug the target is the tagged boxes grown by
+ *   n_buffer_box boxes (see buildCaseLayout), so the cluster's bounding box,
+ *   not the domain's, is what the FFT pays for. layout = full restores the
+ *   whole-domain target.
  *
  * 2D
  *
@@ -93,6 +156,7 @@
  *   unit disc. The file compiles and runs unchanged in 2D; the projected centre
  *   density is ~sqrt(1-r^2) rather than uniform, which is harmless for a test.
  */
+
 
 namespace lgf_cluster
 {
@@ -152,17 +216,8 @@ namespace lgf_cluster
     };
 }
 
-
-// Source field evaluated inside a ParallelFor. Same signature as the single
-// Gaussian it replaces, so initializeSourceMultiFab() needs no change.
-//
-// constexpr table, not a device pointer: the compiler materialises `blob`
-// directly into the kernel image (constant bank / immediates), so there is
-// nothing to allocate, nothing to copy and nothing to free. Cost is ~32 * 10
-// flops per cell with the early-out taken most of the time -- about 0.05 s at
-// 1024^3 on one A100, i.e. lost in the noise against the transform.
-AMREX_GPU_DEVICE AMREX_FORCE_INLINE
-amrex::Real sourceField(amrex::Real x, amrex::Real y, amrex::Real z)
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+amrex::Real blobClusterSource (amrex::Real x, amrex::Real y, amrex::Real z) noexcept
 {
     amrex::ignore_unused(y, z);
 
@@ -185,39 +240,106 @@ amrex::Real sourceField(amrex::Real x, amrex::Real y, amrex::Real z)
     return f;
 }
 
+// ---------------------------------------------------------------------------
+// ring: Gaussian-core torus of radius R in the xy-plane, the shape of a
+// vortex ring's vorticity support (an annulus in 2D). The bounding box is
+// mostly empty, more so for the snug layout than for a blob of the same size.
+// ---------------------------------------------------------------------------
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+amrex::Real ringSource (amrex::Real x, amrex::Real y, amrex::Real z) noexcept
+{
+    amrex::ignore_unused(z);
+
+    constexpr amrex::Real R = 1.0;                  // ring radius
+    constexpr amrex::Real sigma = 0.1;              // core
+    constexpr amrex::Real cx = 0.05, cy = -0.1, cz = 0.1;
+
+    const amrex::Real rho = std::sqrt((x - cx)*(x - cx) + (y - cy)*(y - cy));
+#if AMREX_SPACEDIM == 3
+    const amrex::Real s2 = (rho - R)*(rho - R) + (z - cz)*(z - cz);
+#else
+    amrex::ignore_unused(cz);
+    const amrex::Real s2 = (rho - R)*(rho - R);
 #endif
 
-// #ifndef SOURCEFIELD_H_
-// #define SOURCEFIELD_H_
+    return cutGaussian(s2, sigma, 1.0);
+}
 
-// #include <AMReX_Geometry.H>
-// #include <AMReX_MultiFab.H>
-// #include <AMReX_BCRec.H>
-// #include <AMReX_MultiFab.H>
-// #include <AMReX_Math.H>
+// ---------------------------------------------------------------------------
+// shell: Gaussian shell of radius R around a point. A large, hollow support:
+// the tagged region is a thin surface and the interior holds no source.
+// ---------------------------------------------------------------------------
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+amrex::Real shellSource (amrex::Real x, amrex::Real y, amrex::Real z) noexcept
+{
+    constexpr amrex::Real R = 2.0;
+    constexpr amrex::Real sigma = 0.08;
+    constexpr amrex::Real cx = -0.1, cy = 0.05, cz = 0.1;
 
+    const amrex::Real r = std::sqrt(distanceSquared(x, y, z, cx, cy, cz));
 
-// // function for computing lgf kernel inside parallelFor
-// AMREX_GPU_DEVICE AMREX_FORCE_INLINE
-// amrex::Real sourceField(amrex::Real x, amrex::Real y, amrex::Real z)
-//     {
-//         // parameters of the gaussian distribution
-//         amrex::Real cent_x = 0.0;
-//         #if AMREX_SPACEDIM == 2
-//             amrex::Real cent_y = 0.25;
-//         #endif    
-//         #if AMREX_SPACEDIM == 3
-//             amrex::Real cent_y = 0.25;
-//             amrex::Real cent_z = 0.0;
-//         #endif
-//         amrex::Real variance = 0.5;
+    return cutGaussian((r - R)*(r - R), sigma, 1.0);
+}
 
-//         amrex::Real r_sq = AMREX_D_TERM((x - cent_x)*(x - cent_x),
-//                                            + (y - cent_y)*(y - cent_y),
-//                                            + (z - cent_z)*(z - cent_z));
-        
-//         amrex::Real f = std::exp(-r_sq / variance); 
-        
-//         return f;                                
-//     }
-// #endif
+// ---------------------------------------------------------------------------
+// distant_pair: two small clusters of three blobs in opposite corners, of
+// opposite sign. The support is tiny and its bounding box is most of the
+// domain: the sparse layout an FFT pays the most for.
+// ---------------------------------------------------------------------------
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+amrex::Real distantPairSource (amrex::Real x, amrex::Real y, amrex::Real z) noexcept
+{
+    constexpr amrex::Real sigma = 0.05;
+    constexpr amrex::Real corner = 3.5;
+    // blob offsets within a cluster, and their strengths
+    constexpr amrex::Real offset[3][4] = {
+        { 0.00,  0.00,  0.00, 1.0},
+        { 0.15, -0.05,  0.10, 0.6},
+        {-0.10,  0.12, -0.08, 0.8}
+    };
+
+    amrex::Real f = amrex::Real(0.0);
+    for (int n = 0; n < 3; ++n)
+    {
+        f += cutGaussian(distanceSquared(x, y, z, -corner + offset[n][0], -corner + offset[n][1], -corner + offset[n][2]),
+                         sigma,  offset[n][3]);
+        f += cutGaussian(distanceSquared(x, y, z,  corner + offset[n][0],  corner + offset[n][1],  corner + offset[n][2]),
+                         sigma, -offset[n][3]);
+    }
+
+    return f;
+}
+
+// ---------------------------------------------------------------------------
+// The cases, by id; TestSuite.H maps names to these. Add a case by writing
+// its function above, adding an id here (before n_cases) and a line in
+// sourceField(), and listing it in loadTestCase().
+// ---------------------------------------------------------------------------
+enum class SourceCase : int
+{
+    single_blob = 0,
+    dipole,
+    blob_cluster,
+    ring,
+    shell,
+    distant_pair,
+    n_cases
+};
+
+// f(x, y, z) for the given case; called from inside a ParallelFor
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+amrex::Real sourceField (SourceCase source_case, amrex::Real x, amrex::Real y, amrex::Real z) noexcept
+{
+    switch (source_case)
+    {
+        case SourceCase::single_blob:  return singleBlobSource(x, y, z);
+        case SourceCase::dipole:       return dipoleSource(x, y, z);
+        case SourceCase::blob_cluster: return blobClusterSource(x, y, z);
+        case SourceCase::ring:         return ringSource(x, y, z);
+        case SourceCase::shell:        return shellSource(x, y, z);
+        case SourceCase::distant_pair: return distantPairSource(x, y, z);
+        default:                       return amrex::Real(0.0);
+    }
+}
+
+#endif
