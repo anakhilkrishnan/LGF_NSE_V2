@@ -4,8 +4,10 @@ add_executable(lgfpoisson
                 solveMLMG.cpp
                 residualCheck.cpp
                 tagSource.cpp
+                testSuite.cpp
                 MyFunctions.H
-                SourceField.H)
+                SourceField.H
+                TestSuite.H)
 
 if(AMReX_GPU_BACKEND STREQUAL "CUDA")
     setup_target_for_cuda_compilation(lgfpoisson)

@@ -101,6 +101,18 @@ lgf.fmm_n_interp = 10     # fmm: nodes per interpolation
 
 With none of them given, the backend is `fft`, built exactly as before the merge. `fft` is fastest when the active region fills most of its bounding box; `fmm` costs O(N) in the active blocks and pays off when the region is sparse. The FMM's error (about 1e-10 relative at the defaults) must stay well below `support_threshold`, or it shows up as spurious support.
 
+## Testing a Poisson backend
+
+`lgfpoisson` runs a suite of unbounded Poisson problems with compactly supported sources (`Src/LGF_test/SourceField.H`; the suite itself is described in `TestSuite.H`). For each case it tags the source, grows the tags into a snug solution layout the way the NSE solver builds D_soln, and solves `n_iter` times per index type: the first solve carries the setup, the rest time the repeated cost. Each run is checked for its residual, its agreement with `reference_solver`, and drift between repeated solves; the program exits with status 1 if any check fails.
+
+```bash
+## every case, cell and edge data, the FMM checked against the FFT, a csv of the timings
+./lgfpoisson inputs test_cases=all index_types="cell edge_x" n_iter=5 \
+             lgf.solver=fmm reference_solver=fft summary_file=bench.csv
+```
+
+The other inputs are documented in `Src/LGF_test/Utils/inputs`. Plotfiles are named `<plot_prefix>_<case>_<type>_<n_cell>`.
+
 ## Contributing to the code
 
 Any suggestions and bug fixes are welcome. You may reach out to the author via email (kakhil@iisc.ac.in). Alternatively, you may create a new branch and raise a pull request.

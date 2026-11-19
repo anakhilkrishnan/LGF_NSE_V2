@@ -1,18 +1,46 @@
 amrex.max_gpu_streams=4
 amrex.abort_on_out_of_gpu_memory=1
 
+# ---- grid
 n_cell = 512
 max_grid_size = 16
-
-tagging_threshold = 1.0e-8
-
-index_type = (0,0,0)
 domain_lo = -5.0 -5.0 -5.0
 domain_hi = 5.0 5.0 5.0
 
-lgf.solver = fft       # fft | fmm | direct, see Src/LGF_core/LGFSolverFactory.H
-n_lookup = 32
+# ---- Poisson backend (see Src/LGF_core/LGFSolverFactory.H)
+lgf.solver = fft       # fft | fmm | direct
+n_lookup = 32          # 2D table; the 3D table stops at 16
 
+# ---- test suite (see Src/LGF_test/TestSuite.H)
+# single_blob dipole blob_cluster ring shell distant_pair, or all
+test_cases = blob_cluster
+# cell node face_x face_y face_z edge_x edge_y edge_z (edges in 3D only)
+index_types = cell
+
+# tag boxes with |f| > tagging_threshold * max|f|
+tagging_threshold = 1.0e-8
+# snug: solve on the tagged boxes grown by n_buffer_box boxes, as D_soln in
+# the NSE solver; full: solve on the whole domain
+layout = snug
+n_buffer_box = 2
+
+# solves per (case, index type): the first carries the setup, the rest time
+# the repeated cost. reuse_solver = true keeps one solver for the whole run
+# and regridOnto()s it per case, as the NSE solver does
+n_iter = 5
+reuse_solver = false
+
+# checks: error against reference_solver (none skips it), residual relative
+# to max|f|, drift between the first and last solve
+reference_solver = none
+tol_error = 1.0e-8
+tol_residual = 1.0e-6
+tol_drift = 1.0e-12
+
+# csv of the summary, appended to; leave empty for none
+summary_file = ""
+
+# needs layout = full and cell data
 compare_MLMG = false
 
 write_plot = true
