@@ -178,9 +178,18 @@ namespace lgf_cluster
     // derived: 1/(2 sigma^2) and the squared support radius
     static constexpr amrex::Real INV_2S2 = 1.0 / (2.0 * SIGMA * SIGMA);
     static constexpr amrex::Real R_SUPP2 = 2.0 * CUT * SIGMA * SIGMA;
+}
 
-    // {p_x, p_y, p_z, c}
-    static constexpr amrex::Real blob[N_BLOBS][4] = {
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+amrex::Real blobClusterSource (amrex::Real x, amrex::Real y, amrex::Real z) noexcept
+{
+    amrex::ignore_unused(y, z);
+
+    // {p_x, p_y, p_z, c}. The table is local to the function: CUDA lets
+    // device code read namespace-scope constexpr scalars, but not arrays, so
+    // in lgf_cluster it is "undefined in device code". A local constexpr
+    // array is compiled into the function on host and device alike
+    constexpr amrex::Real blob[lgf_cluster::N_BLOBS][4] = {
         {+0.55801859, -0.49209070, -0.03398098, -0.76474523},
         {+0.85009778, -0.08890864, +0.05708035, -0.71987671},
         {-0.58536576, -0.26284485, +0.33759874, -0.95207512},
@@ -214,27 +223,21 @@ namespace lgf_cluster
         {-0.66054078, +0.32708146, -0.52472139, +0.69603880},
         {+0.28679498, -0.62204981, -0.00475310, +0.68420477}
     };
-}
-
-AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
-amrex::Real blobClusterSource (amrex::Real x, amrex::Real y, amrex::Real z) noexcept
-{
-    amrex::ignore_unused(y, z);
 
     amrex::Real f = amrex::Real(0.0);
 
     for (int n = 0; n < lgf_cluster::N_BLOBS; ++n)
     {
-        AMREX_D_TERM(const amrex::Real ddx = x - lgf_cluster::CLUSTER_R * lgf_cluster::blob[n][0];,
-                     const amrex::Real ddy = y - lgf_cluster::CLUSTER_R * lgf_cluster::blob[n][1];,
-                     const amrex::Real ddz = z - lgf_cluster::CLUSTER_R * lgf_cluster::blob[n][2];)
+        AMREX_D_TERM(const amrex::Real ddx = x - lgf_cluster::CLUSTER_R * blob[n][0];,
+                     const amrex::Real ddy = y - lgf_cluster::CLUSTER_R * blob[n][1];,
+                     const amrex::Real ddz = z - lgf_cluster::CLUSTER_R * blob[n][2];)
 
         const amrex::Real r2 = AMREX_D_TERM(ddx*ddx, + ddy*ddy, + ddz*ddz);
 
         // hard cut -> f is EXACTLY zero outside the union of the blob supports
         if (r2 >= lgf_cluster::R_SUPP2) { continue; }
 
-        f += lgf_cluster::blob[n][3] * std::exp(-r2 * lgf_cluster::INV_2S2);
+        f += blob[n][3] * std::exp(-r2 * lgf_cluster::INV_2S2);
     }
 
     return f;
